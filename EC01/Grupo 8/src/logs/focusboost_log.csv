@@ -1,0 +1,5 @@
+timestamp,mode,attention,social_time,notifications,app_category,nocturnal,focus_score,usage_label,planned_blocks,done_blocks,adherence
+2025-10-08T15:10:07,manual,12.0,2.0,10.0,Social,False,58.0,moderado,2,1,50.0
+2025-10-08T15:18:39,manual,56.0,2.0,12.0,Social,False,100.0,moderado,,,
+2025-10-08T15:30:16,manual_buckets,25.0,1.5,30.0,"Social (Instagram, TikTok, X, etc.)",False,65.25,bajo,,,,"Baja (me distraigo rápido, <15 min seguidos)",Algo (1–2 h),Normales (sin cambios especiales),Tarde (12–18)
+2025-10-08T15:33:32,manual_buckets,55.0,2.5,60.0,"Mensajería (WhatsApp, Messenger)",False,85.75,moderado,2,1,50.0,Media (aguanto unos 30–45 min),Moderado (2–3 h),Muchas / constantes (me interrumpían seguido),Tarde (12–18)
