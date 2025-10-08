@@ -1,0 +1,6 @@
+Base de datos utilizada: Supermarket Sales Dataset
+Fuente: https://www.kaggle.com/datasets/faresashraf1001/supermarket-sales
+
+Descripción:
+Este conjunto de datos contiene información sobre las ventas de supermercados, incluyendo detalles como fecha, tipo de producto, método de pago, ciudad, género del cliente, calificaciones y más.
+Fue utilizado para analizar patrones de consumo, comportamiento del cliente y optimización del inventario dentro del proyecto "Merquio: el mercado de soluciones inteligentes".
