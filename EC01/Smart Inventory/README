@@ -1,0 +1,8 @@
+Planteamiento del problema:
+En las tiendas minoristas, la gestión ineficiente del inventario provoca dificultades para anticipar la demanda, generando faltantes de productos o exceso de stock. Esto a su vez produce pérdidas económicas, desperdicio de productos/aumento de residuos, especialmente en artículos perecederos e insatisfacción del cliente, disminuyendo la competitividad del negocio.
+Objetivo General:
+Predecir la demanda futura con datos en tiempo real para reducir pérdidas, evitar desabastecimientos y promover la  toma de decisiones estratégicas en tiendas minoristas
+Objetivos específicos 
+Desarrollar una plataforma de análisis de inventario y demanda.
+Diseñar un algoritmo predictivo para la reposición de inventario.
+Construir un sistema de visualización y reporte para micro comercios
