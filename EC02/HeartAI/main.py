@@ -1,0 +1,80 @@
+import streamlit as st
+import os
+from app.carga_datos import cargar_archivo, mostrar_info, mostrar_estadisticas, mostrar_preview
+from app.eda import ejecutar_eda
+
+def main():
+    # Título de la aplicación
+    st.title("Data Analysis for Heart Risk Attack Dataset")
+
+    st.markdown("""
+    ### Column Descriptions
+    
+    | #  | Column Name |
+    |----|-------------|
+    | 1  | age |
+    | 2  | sex |
+    | 3  | chest pain type (4 values) |
+    | 4  | resting blood pressure |
+    | 5  | serum cholesterol in mg/dl |
+    | 6  | fasting blood sugar > 120 mg/dl |
+    | 7  | resting electrocardiographic results (values 0,1,2) |
+    | 8  | maximum heart rate achieved |
+    | 9  | exercise induced angina |
+    | 10 | oldpeak = ST depression induced by exercise relative to rest |
+    | 11 | the slope of the peak exercise ST segment |
+    | 12 | number of major vessels (0-3) colored by fluoroscopy |
+    | 13 | thal: 0 = normal; 1 = fixed defect; 2 = reversible defect |
+    """)
+
+
+    # Sidebar para navegación entre pestañas
+    st.sidebar.title("Navigation Menu")
+    opciones = ["Data Loading", "EDA"]
+    seleccion = st.sidebar.radio("Select a tab:", opciones)
+
+    # Cargar Datos
+    if seleccion == "Data Loading":
+        st.subheader("Upload your data file")
+        
+        # Si no hemos cargado aún el archivo, mostramos  file_uploader
+        if "df_original" not in st.session_state:
+            df = cargar_archivo()
+            if df is not None:
+                st.session_state.df_original = df.copy()   # guardamos original
+                st.session_state.df = df.copy()            # copia de trabajo
+                st.sidebar.success("File uploaded successfully!")
+
+        # Si ya existe el dataset en sesión, mostramos menú de visualización
+        if "df_original" in st.session_state:
+            
+            # Menú interactivo dentro de la pestaña "Carga de Archivos"
+            st.subheader("Display options")
+            opciones_submenu = ["Data Preview", "Data Information", "Descriptive Statistics"]
+            seleccion_submenu = st.radio("Choose what to view:", opciones_submenu, horizontal=True)  # Usamos `horizontal=True` para que quede en una fila
+
+            # Mostrar la información general o estadísticas descriptivas
+            if seleccion_submenu == "Data Preview":
+                mostrar_preview(st.session_state.df_original)  # Muestra las primeras filas del archivo
+            elif seleccion_submenu == "Data Information":
+                mostrar_info(st.session_state.df_original)  # Mostrar la información general del dataframe
+            elif seleccion_submenu == "Descriptive Statistics":
+                mostrar_estadisticas(st.session_state.df_original)  # Mostrar estadísticas descriptivas
+
+    # EDA
+    elif seleccion == "EDA":
+        #if 'df' in st.session_state:
+        if 'df_original' in st.session_state:
+            st.subheader("Exploratory Data Analysis (EDA)")
+
+            df_limpio = ejecutar_eda(st.session_state.df_original)
+            st.session_state.df = df_limpio # Dataset final actualizado para ML
+
+            # Usamos df de trabajo, sin modificar el original
+            #st.session_state.df = ejecutar_eda(st.session_state.df)
+        else:
+            st.warning("Please upload a file first.")
+        
+
+if __name__ == "__main__":
+    main()
