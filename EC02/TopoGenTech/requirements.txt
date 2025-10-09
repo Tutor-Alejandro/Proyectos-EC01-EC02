@@ -1,0 +1,21 @@
+# TopogenTech Satellite Embeddings Downloader Requirements
+
+# Core dependencies
+earthengine-api>=0.1.350
+google-cloud-storage>=2.0.0
+typing-extensions>=4.0.0
+
+# Optional dependencies for enhanced functionality
+numpy>=1.21.0
+pandas>=1.3.0
+
+# Development dependencies (install with pip install -e .[dev])
+# pytest>=6.0
+# pytest-cov>=2.0
+# black>=22.0
+# flake8>=4.0
+# mypy>=0.950
+
+# Documentation dependencies (install with pip install -e .[docs])
+# sphinx>=4.0
+# sphinx-rtd-theme>=1.0
