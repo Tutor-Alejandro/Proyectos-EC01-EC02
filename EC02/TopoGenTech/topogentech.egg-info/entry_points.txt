@@ -1,0 +1,2 @@
+[console_scripts]
+topogentech-download = topogentech.cli:main

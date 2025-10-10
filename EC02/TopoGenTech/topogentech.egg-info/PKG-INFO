@@ -1,0 +1,127 @@
+Metadata-Version: 2.4
+Name: topogentech
+Version: 0.1.0
+Summary: A modular library for downloading satellite embeddings from Google Earth Engine
+Home-page: https://github.com/DaVas1410/TopoGenTech
+Author: TopogenTech Team
+Author-email: contact@topogentech.com
+Project-URL: Bug Tracker, https://github.com/DaVas1410/TopoGenTech/issues
+Project-URL: Documentation, https://github.com/DaVas1410/TopoGenTech/blob/main/README.md
+Project-URL: Source Code, https://github.com/DaVas1410/TopoGenTech
+Keywords: satellite,embeddings,google-earth-engine,remote-sensing,geospatial,machine-learning,topological-data-analysis,palm-oil,deforestation,ecuador
+Classifier: Development Status :: 3 - Alpha
+Classifier: Intended Audience :: Science/Research
+Classifier: Intended Audience :: Developers
+Classifier: Topic :: Scientific/Engineering :: GIS
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.8
+Classifier: Programming Language :: Python :: 3.9
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Operating System :: OS Independent
+Requires-Python: >=3.8
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: earthengine-api>=0.1.350
+Requires-Dist: google-cloud-storage>=2.0.0
+Requires-Dist: typing-extensions>=4.0.0
+Requires-Dist: numpy>=1.21.0
+Requires-Dist: pandas>=1.3.0
+Provides-Extra: dev
+Requires-Dist: pytest>=6.0; extra == "dev"
+Requires-Dist: pytest-cov>=2.0; extra == "dev"
+Requires-Dist: black>=22.0; extra == "dev"
+Requires-Dist: flake8>=4.0; extra == "dev"
+Requires-Dist: mypy>=0.950; extra == "dev"
+Provides-Extra: docs
+Requires-Dist: sphinx>=4.0; extra == "docs"
+Requires-Dist: sphinx-rtd-theme>=1.0; extra == "docs"
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: keywords
+Dynamic: license-file
+Dynamic: project-url
+Dynamic: provides-extra
+Dynamic: requires-dist
+Dynamic: requires-python
+Dynamic: summary
+
+# TopogenTech 🌴🛰️
+
+**Análisis topológico de la expansión de palma aceitera en Ecuador mediante Machine Learning y datos satelitales**
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
+
+## 📋 Descripción
+
+TopogenTech es una plataforma de análisis geoespacial que combina **Machine Learning** con **Topological Data Analysis (TDA)** para estudiar la expansión del cultivo de palma aceitera en Ecuador y su impacto sobre ecosistemas frágiles.
+
+### Problema a resolver
+
+El cultivo de palma aceitera en Ecuador está causando una **expansión acelerada sobre ecosistemas frágiles** como:
+- Bosques húmedos tropicales
+- Manglares
+- Áreas de amortiguamiento de reservas naturales
+
+Los mapas de cobertura tradicionales **no capturan la estructura topológica del paisaje** (conectividad, fragmentación, corredores ecológicos), lo que limita la capacidad de:
+- Anticipar impactos ambientales
+- Diseñar políticas de conservación efectivas
+- Monitorear cambios tempranos en el territorio
+
+### Nuestra solución
+
+Integramos tecnologías avanzadas para proporcionar análisis profundos del paisaje:
+
+🔍 **Detección temprana** de patrones de expansión  
+📊 **Cuantificación objetiva** de fragmentación ecológica  
+🌐 **Indicadores topológicos** para gestión territorial sostenible  
+🛰️ **Análisis multitemporal** con datos satelitales
+
+## 🎯 Público objetivo
+
+### Instituciones gubernamentales
+- **Ministerio del Ambiente, Agua y Transición Ecológica (MAATE)**: Toma de decisiones en política ambiental y ordenamiento territorial
+- **Gobiernos locales y provinciales** (Esmeraldas, Santo Domingo, Los Ríos): Planificación de uso de suelo y control de deforestación
+
+### Organizaciones internacionales
+- **ONGs ambientales** (WWF, Conservation International)
+- **Organismos multilaterales** (FAO, PNUD)
+- **Iniciativas de certificación sostenible**
+
+## 🚀 Características principales
+
+- **Análisis topológico** mediante homología persistente
+- **Embeddings multitemporales** de imágenes satelitales
+- **Detección de patrones** de expansión agrícola
+- **Métricas de fragmentación** del paisaje
+- **Visualización interactiva** de resultados
+- **API REST** para integración con otros sistemas
+
+## 🛠️ Tecnologías
+
+- **Python 3.8+**
+- **Machine Learning**: scikit-learn, TensorFlow/PyTorch
+- **TDA**: Giotto-tda, Ripser
+- **Geoespacial**: GDAL, Rasterio, GeoPandas
+- **Visualización**: Matplotlib, Plotly, Folium
+- **Datos satelitales**: Sentinel-2, Landsat, mapas globales de palma aceitera
+
+## 📦 Instalación
+```bash
+# Clonar el repositorio
+git clone https://github.com/tu-usuario/topogentech.git
+cd topogentech
+
+# Crear entorno virtual
+python -m venv venv
+source venv/bin/activate  # En Windows: venv\Scripts\activate
+
+# Instalar dependencias
+pip install -r requirements.txt
