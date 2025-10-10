@@ -1,0 +1,25 @@
+# ===============================
+# HeartRisk Navigator
+# Archivo: requirements.txt
+# ===============================
+
+# Interfaz gráfica
+tkinter # (incluido por defecto con Python)
+
+# Análisis y manipulación de datos
+pandas==2.2.2
+numpy==1.26.4
+
+# Visualización de datos
+matplotlib==3.9.2
+seaborn==0.13.2
+
+# Generación de reportes PDF
+reportlab==4.2.2
+Pillow==10.4.0   # Para manejo de imágenes (si se incluyen en los reportes)
+
+# Machine Learning (para modelos predictivos personalizados)
+scikit-learn==1.5.2
+
+# Otras dependencias del sistema (ya incluidas en Python estándar)
+datetime, json, pathlib, threading, logging
