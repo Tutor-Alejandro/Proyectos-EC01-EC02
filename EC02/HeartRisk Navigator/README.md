@@ -25,13 +25,14 @@ La interfaz gráfica está construida con **Tkinter**, integra visualizaciones c
 # Estructura del proyecto
 
 HeartRiskNavigator/
-│
-├── main.py # Archivo principal (interfaz y lógica)
-├── risk_predictor.py # Módulo del modelo predictivo
-├── factor_explainer.py # Explicaciones por cada factor del modelo
-├── heart_failure_clinical_records_dataset.csv # Dataset base de entrenamiento
-├── patient_history.json # Historial de pacientes evaluados
-├── heartrisk.log # Registro de eventos y errores
-└── requirements.txt # Librerías necesarias
+
+- main.py # Archivo principal (interfaz y lógica)
+- risk_predictor.py # Módulo del modelo predictivo
+- factor_explainer.py # Explicaciones por cada factor del modelo
+- heart_failure_clinical_records_dataset.csv # Dataset base de entrenamiento
+- patient_history.json # Historial de pacientes evaluados
+- heartrisk.log # Registro de eventos y errores
+- requirements.txt # Librerías necesarias
+
 
 # Nota: Instalar las librerias necesarias antes de la ejecución
