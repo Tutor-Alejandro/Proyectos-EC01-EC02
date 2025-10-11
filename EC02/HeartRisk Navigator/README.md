@@ -38,7 +38,8 @@ HeartRiskNavigator/
 # Nota: Instalar las librerias necesarias antes de la ejecución
 
 * Instalar requeriments.txt
-pip install -r requirements.txt
+- pip install -r requirements.txt
 * Ejecutar el archivo principal
-python main_app.py
+- python main_app.py
 * Asegúrate de que todos los archivos (.csv, .json, .py) estén en el mismo directorio.
+
