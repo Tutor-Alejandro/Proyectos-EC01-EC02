@@ -26,7 +26,7 @@ La interfaz gráfica está construida con **Tkinter**, integra visualizaciones c
 
 HeartRiskNavigator/
 
-- main.py # Archivo principal (interfaz y lógica)
+- main_app.py # Archivo principal (interfaz y lógica)
 - risk_predictor.py # Módulo del modelo predictivo
 - factor_explainer.py # Explicaciones por cada factor del modelo
 - heart_failure_clinical_records_dataset.csv # Dataset base de entrenamiento
@@ -36,3 +36,9 @@ HeartRiskNavigator/
 
 
 # Nota: Instalar las librerias necesarias antes de la ejecución
+
+* Instalar requeriments.txt
+pip install -r requirements.txt
+* Ejecutar el archivo principal
+python main_app.py
+* Asegúrate de que todos los archivos (.csv, .json, .py) estén en el mismo directorio.
