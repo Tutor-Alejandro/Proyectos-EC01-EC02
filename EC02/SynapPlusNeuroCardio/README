@@ -1,0 +1,118 @@
+# CardioNeuro — Prototipo Python (ECG + EMG)
+
+# Abstract
+CardioNeuro (Fase 1) es un prototipo *solo Python* para apoyo clínico que procesa señales ECG y EMG on‑premise, aplica control de calidad, extrae características deterministas, ejecuta un motor de reglas clínicas (configurable) para detectar eventos relevantes (arritmias, pausas, PVCs, actividad neuromuscular) y genera reportes explicables y priorizados que el médico valida.
+
+
+## 1:  Planteamiento
+Los servicios de emergencia y cardiología enfrentan grandes volúmenes de trazas, alarmas frecuentes por artefactos y demoras en la interpretación humana que pueden retrasar la atención crítica. CardioNeuro busca reducir tiempo de triage, disminuir falsos positivos causados por actividad muscular y entregar evidencia auditable al médico, sin reemplazar su criterio.
+
+## 2: Objetivo de la prueba (Fase 1)
+2.1- Validar operativamente que una solución determinista (Python-only) basada en fusión ECG+EMG y reglas clínicas puede acelerar el triage y producir reportes aceptables por cardiólogos.
+2.2- Generar un dataset local y anotado para la futura Fase 2 (AI).
+
+## 3: Alcance (lo que incluye esta fase)
+3.1  - Ingesta de archivos (EDF/WFDB/CSV).  
+3.2  - Control de calidad (SNR, saturación, lead-off, flags de artefacto).  
+3.3  - Preprocesado (bandpass, notch, remoción de línea base).  
+3.4  - Detección QRS (Pan–Tompkins u equivalente) y cálculo de RR/HRV.  
+3.5  - Extracción de métricas EMG (RMS, energía por banda, detección de bursts).  
+3.6  - Motor de reglas declarativo (YAML/JSON) con conjunto inicial de reglas clínicas.  
+3.7  - Lógica de fusión ECG↔EMG para reducir falsos positivos por artefacto.  
+3.8  - Scoring de prioridad y generación de reportes explicables (HTML/PDF con plots).  
+3.9  - API mínima (FastAPI) y dashboard de revisión (Streamlit).  
+3.10 - Pipeline de anonimización y exportación para investigación.
+
+## 4: Características principales
+4.1 - On‑premise: procesamiento local para privacidad y aceptación clínica.  
+4.2 - Explicabilidad: cada alerta incluye el fragmento de señal, métricas y reglas disparadas.  
+4.3 - Reglas versionadas: thresholds y reglas en YAML/JSON para actualización sin tocar código.  
+4.4 - QC integrado: las alertas llevan un score de confianza dependiente de la calidad de señal.
+
+## 5: Herramientas y stack recomendado
+5.1 - Lenguaje: Python 3.9+/ Google Colab  
+5.2 - Lectura señales: `wfdb`, `pyedflib`, `mne` (opcional)  
+5.3 - Procesamiento: `numpy`, `scipy`, `pywavelets`  
+5.4 - Visualización: `matplotlib`, `plotly`  
+5.5 - API & Dashboard: `FastAPI`, `uvicorn`, `Streamlit`  
+5.6 - DB & storage: PostgreSQL para metadatos; almacenamiento local de archivos EDF/WFDB  
+5.7 - Testing & CI: `pytest`, `GitHub Actions`  
+5.8 - Contenerización: Docker, docker‑compose  
+5.9 - Formato reglas: YAML/JSON (versionado en Git)
+
+## 6: Estructura propuesta del repositorio
+```
+/ingest/                 readers: edf, wfdb, csv
+/qc/                     quality checks
+/preprocess/             filtros y correcciones
+/feature_extraction/     qrs_detection, hrv, emg features
+/rules/                  motor + rules/*.yml
+/fusion/                 lógica ECG-EMG
+/scoring/                priority scoring
+/reporting/              report generator + plots
+/api/                    FastAPI app
+/dashboard/              Streamlit app
+/data_example/           toy EDF/WFDB files para demo
+/docs/                   pilot protocol, install guide, user manual
+/tests/                  pytest tests
+Dockerfile
+README.md
+```
+
+## 7: Instalación rápida (conceptual)
+7.1. Clonar repo y configurar entorno virtual (poetry o venv).  
+7.2. Construir Docker image o instalar dependencias desde `requirements.txt`.  
+7.3. Configurar PostgreSQL (opcional para MVP) y path de almacenamiento de señales.  
+7.4. Cargar dataset demo y ejecutar pipeline de ejemplo (ingest → qc → detect → report).  
+
+> Nota: en el repositorio se incluirán scripts `scripts/setup.sh` y `scripts/run_demo.sh` para automatizar estos pasos.
+
+## 8: Uso (flujo esperado)
+8.1. Subir archivo EDF/WFDB/CSV vía API o carpeta watch.  
+8.2. El pipeline ejecuta QC y preprocesado y extrae features.  
+8.3. El motor de reglas evalúa y produce alertas con score y evidencia.  
+8.4. El dashboard lista casos priorizados; el médico abre el reporte y confirma/descarta.  
+8.5. Las decisiones se registran en `audit_logs` y las anotaciones se guardan para entrenamiento futuro.
+
+## 9: Datasets y pruebas
+9.1 - Se recomienda usar como referencia datasets públicos (MIT‑BIH, PhysioNet) para pruebas unitarias e integración.  
+9.2 - El pilot debe usar datos locales anonimizados con consentimiento y un plan de anotación (mínimo N casos por tipo de evento).
+
+## 10: Resultados esperados de la prueba
+10.1 - MVP funcional capaz de procesar estudios y generar reportes explicables.  
+10.2 - Reducción medible del tiempo de triage en el entorno piloto (meta a acordar con el hospital).  
+10.3 - Dataset anotado local listo para entrenar modelos IA en Fase 2.  
+10.4 - Documentación y protocolo de validación clínica.
+
+## 11: Métricas de éxito (a medir en el pilot)
+11.1 - Tiempo medio de triage pre/post.  
+11.2 - Sensibilidad/especificidad por evento crítico.  
+11.3 - Tasa de falsos positivos en alertas críticas.  
+11.4 - % reportes aceptados sin modificación por médicos.  
+11.5 - Latencia promedio por estudio (subida → reporte).
+
+## 12: Gobernanza de datos y privacidad
+12.1 - Procesamiento preferentemente on‑premise.  
+12.2 - Al exportar datos para investigación: anonimización (hash + salt), eliminación de PHI y registro de consentimientos.  
+12.3 - Auditoría completa: cada regla activada y acción del médico queda registrada.
+
+## 13: Roadmap (próximos pasos después de la prueba Python)
+13.1. Validación clínica y ajustes de reglas (post‑pilot).  
+13.2. Construcción de pipeline de anotación y curación de dataset.  
+## 13.3. Fase 2: entrenamiento e integración de modelos ML/AI explicables usando los datos anotados.  
+13.4. Preparación para certificación/regulación (según país) si se evoluciona a producto médico.
+
+## Equipo y roles 
+- Liderazgo técnico (Python)                              Dairon Steven Cabascango Erazo
+- Analisis de señales (ECG/EMG)                           Ronaldo Luis Chamorro Rosero
+- Backend/API & DevOps                                    Elian Fernando Torres Parrales
+- QA / Testing                                            Elian Fernando Torres Parrales
+- Product manager / enlace clínico                        Vinicio Alejandro Villaprado Farfan
+- Analisis clínicos (cardiólogo, neurólogo)               Joshua David Montalvo Encalada
+
+## Licencia
+MIT ().
+
+## Contacto
+Project: [StevenCabascango] — [dairon.cabascango@yachaytech.edu.ec]  
+Repositorio: (https://github.com/stevencabascango/M.I.N.D-AI-RESEARCH-GROUP.git)  
