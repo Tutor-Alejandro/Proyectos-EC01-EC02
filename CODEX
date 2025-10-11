@@ -1,0 +1,1076 @@
+import argparse
+import json
+import logging
+import os
+import random
+from typing import List, Optional, Tuple, Dict, Any
+
+import numpy as np
+
+import wfdb
+from scipy import signal
+import matplotlib.pyplot as plt
+
+# SynapPluse NeuroCardio AI - Prototipo Python
+# Funcionalidad: lectura WFDB, preprocesado, QRS detection, HR/HRV, scoring clínico, alertas, plots y export CSV.
+
+import os
+import json
+import logging
+from dataclasses import dataclass, asdict, field
+from typing import Tuple, Dict, Optional, Any, List
+
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy import signal
+from scipy.signal import iirnotch
+import wfdb
+import csv
+from numpy.typing import NDArray
+
+
+# Logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("CardioNeuro")
+
+# ------------------ Data classes ------------------
+@dataclass
+class QCResult:
+    ok: bool
+    reasons: List[str]
+    snr_db: Optional[float] = None
+    percent_nan: Optional[float] = None
+    saturation: Optional[bool] = None
+    flatline: Optional[bool] = None
+
+
+@dataclass
+class ProcessingReport:
+    record_id: str
+    fs: float
+    n_samples: int
+    qc: QCResult
+    hr_mean: Optional[float]
+    hrv_sdnn: Optional[float]
+    hrv_rmssd: Optional[float]
+    rpeaks_sec: List[float]
+    psd_freqs: Optional[np.ndarray]
+    psd_vals: Optional[np.ndarray]
+    emg_artifact_flag: bool
+    plots: Dict[str, str]
+    notes: List[str] = field(default_factory=list)
+
+    # Soporte clínico / triage
+    clinical_score: Optional[Dict[str, Any]] = None
+    alerts: List[str] = field(default_factory=list)
+    priority: Optional[str] = None  # "Low", "Medium", "High"
+
+
+# ------------------ Readers ------------------
+def read_record(
+    record_id: str, pn_dir: Optional[str] = None, local_path: Optional[str] = None
+) -> Tuple[np.ndarray, float, Dict[str, Any]]:
+    try:
+        if local_path:
+            logger.info(f"Reading local record from {local_path}")
+            record = wfdb.rdrecord(local_path)
+        elif pn_dir:
+            logger.info(
+                f"Reading record '{record_id}' from PhysioNet directory '{pn_dir}'"
+            )
+            record = wfdb.rdrecord(record_id, pn_dir=pn_dir)
+        else:
+            logger.info(f"Reading record '{record_id}' from local current folder")
+            record = wfdb.rdrecord(record_id)
+    except Exception as e:
+        logger.exception("Error reading record: %s", e)
+        raise
+
+    sig = getattr(record, "p_signal", None)
+    if sig is None:
+        sig = np.asarray(record.d_signal)
+        if sig.ndim == 1:
+            sig = sig.reshape(-1, 1)
+    fs = float(record.fs)
+    meta = {
+        "sig_name": getattr(record, "sig_name", None),
+        "units": getattr(record, "units", None),
+    }
+    return sig, fs, meta
+
+
+# ------------------ Filtros y preprocesado ------------------
+def notch_filter(
+    sig: NDArray, fs: float, notch_freq: float = 50.0, Q: float = 30.0
+) -> NDArray:
+    w0 = notch_freq / (fs / 2.0)
+    b, a = iirnotch(w0, Q)
+    return signal.filtfilt(b, a, sig)
+
+
+def butter_bandpass(lowcut: float, highcut: float, fs: float, order: int = 4):
+    nyq = 0.5 * fs
+    low = max(1e-8, lowcut / nyq)
+    high = min(0.999999, highcut / nyq)
+    b, a = signal.butter(order, [low, high], btype="band")
+    return b, a
+
+
+def bandpass_filter(
+    sig: NDArray, fs: float, lowcut: float = 0.5, highcut: float = 40.0, order: int = 4
+) -> NDArray:
+    b, a = butter_bandpass(lowcut, highcut, fs, order=order)
+    return signal.filtfilt(b, a, sig)
+
+
+def detrend_signal(sig: NDArray) -> NDArray:
+    return signal.detrend(sig)
+
+
+def preprocess_ecg(sig: NDArray, fs: float, apply_notch: bool = True) -> NDArray:
+    sig = np.asarray(sig, dtype=float)
+    sig = detrend_signal(sig)
+    if apply_notch:
+        f, Pxx = signal.welch(sig, fs=fs, nperseg=min(len(sig), 2048))
+        med = np.median(Pxx) if len(Pxx) > 0 else 0.0
+        idx50 = np.argmin(np.abs(f - 50.0))
+        idx60 = np.argmin(np.abs(f - 60.0))
+        p50 = Pxx[idx50] if idx50 < len(Pxx) else 0.0
+        p60 = Pxx[idx60] if idx60 < len(Pxx) else 0.0
+        if p50 > 0 and p50 > med * 5:
+            logger.info("Applying 50 Hz notch filter")
+            sig = notch_filter(sig, fs, notch_freq=50.0)
+        elif p60 > 0 and p60 > med * 5:
+            logger.info("Applying 60 Hz notch filter")
+            sig = notch_filter(sig, fs, notch_freq=60.0)
+    sig = bandpass_filter(sig, fs, lowcut=0.5, highcut=40.0)
+    med = np.nanmedian(sig)
+    mad = np.nanmedian(np.abs(sig - med)) + 1e-12
+    sig = (sig - med) / mad
+    return sig
+
+
+# ------------------ QC ------------------
+def quality_check(
+    sig: NDArray, fs: float, low_freq: float = 0.5, high_freq: float = 40.0
+) -> QCResult:
+    reasons = []
+    sig = np.asarray(sig).astype(float)
+    n = sig.size
+    percent_nan = float(np.isnan(sig).sum()) / n * 100.0
+    saturation = np.any(sig >= np.max(sig)) and np.any(sig <= np.min(sig))
+    flatline = False
+    if n >= int(fs * 1.0):
+        if np.nanvar(sig[: int(fs)]) < 1e-12:
+            flatline = True
+    bp_sig = bandpass_filter(sig, fs, low_freq, high_freq) if n > 10 else sig
+    energy_inband = np.nansum(bp_sig**2)
+    energy_total = np.nansum((sig - np.nanmean(sig)) ** 2)
+    snr_db = None
+    if energy_total <= 0:
+        reasons.append("Energy total de la señal no positiva.")
+    else:
+        noise_energy = max(energy_total - energy_inband, 1e-12)
+        snr = energy_inband / noise_energy
+        snr_db = 10.0 * np.log10(snr + 1e-12)
+    if percent_nan > 1.0:
+        reasons.append(f"Alto porcentaje NaN: {percent_nan:.2f}%")
+    if flatline:
+        reasons.append("Posible flatline en primer segundo")
+    if saturation:
+        reasons.append("Posible saturación de AD/cliping")
+    ok = (percent_nan < 1.0) and (not flatline)
+    return QCResult(
+        ok=ok,
+        reasons=reasons,
+        snr_db=snr_db,
+        percent_nan=percent_nan,
+        saturation=saturation,
+        flatline=flatline,
+    )
+
+
+# ------------------ Analisis Espectral ------------------
+def compute_psd(
+    sig: NDArray, fs: float, nperseg: Optional[int] = None
+) -> Tuple[np.ndarray, np.ndarray]:
+    if nperseg is None:
+        nperseg = min(2048, len(sig))
+    f, Pxx = signal.welch(sig, fs=fs, nperseg=nperseg)
+    return f, Pxx
+
+
+# ------------------ Detección QRS ------------------
+def detect_qrs(sig: NDArray, fs: float) -> np.ndarray:
+    sig = np.asarray(sig, dtype=float)
+    if sig.size < 3:
+        return np.array([], dtype=int)
+    der = np.ediff1d(sig, to_begin=0)
+    sq = der**2
+    ma_win = max(1, int(0.150 * fs))
+    ma = np.convolve(sq, np.ones(ma_win) / ma_win, mode="same")
+    distance = int(0.25 * fs)
+    prom = np.nanmedian(ma) + 0.5 * (np.nanstd(ma) if np.nanstd(ma) > 0 else 1e-6)
+    peaks, properties = signal.find_peaks(ma, distance=distance, prominence=prom)
+    if peaks.size == 0:
+        peaks, properties = signal.find_peaks(
+            ma, distance=distance, prominence=max(1e-6, np.nanmedian(ma) * 0.1)
+        )
+    win_ref = int(0.05 * fs)
+    refined = []
+    for p in peaks:
+        left = max(0, p - win_ref)
+        right = min(len(sig) - 1, p + win_ref)
+        idx_local = left + int(np.argmax(np.abs(sig[left : right + 1])))
+        refined.append(idx_local)
+    refined = np.unique(np.array(refined, dtype=int))
+    return refined
+
+
+# ------------------ HRV ------------------
+def compute_hrv(rpeaks_idx: np.ndarray, fs: float) -> Dict[str, Optional[float]]:
+    if rpeaks_idx is None or len(rpeaks_idx) < 2:
+        return {
+            "hr_mean": None,
+            "sdnn": None,
+            "rmssd": None,
+            "pnn50": None,
+            "rr_intervals": [],
+        }
+    rr_samples = np.diff(rpeaks_idx)
+    rr_sec = rr_samples / fs
+    hr_mean = 60.0 / np.mean(rr_sec) if rr_sec.size > 0 else None
+    sdnn = (
+        float(np.std(rr_sec, ddof=1))
+        if rr_sec.size > 1
+        else float(np.std(rr_sec, ddof=0))
+    )
+    diffs = np.diff(rr_sec)
+    rmssd = float(np.sqrt(np.mean(diffs**2))) if diffs.size > 0 else None
+    pnn50 = (
+        float(100.0 * np.sum(np.abs(diffs) > 0.05) / diffs.size)
+        if diffs.size > 0
+        else None
+    )
+    return {
+        "hr_mean": hr_mean,
+        "sdnn": sdnn,
+        "rmssd": rmssd,
+        "pnn50": pnn50,
+        "rr_intervals": rr_sec,
+    }
+
+
+# ------------------ EMG artifact detection ------------------
+def detect_emg_artifacts(
+    emg_sig: NDArray, fs_emg: float, window_sec: float = 0.5, rms_threshold: float = 2.5
+) -> Tuple[bool, np.ndarray, np.ndarray]:
+    sig = np.asarray(emg_sig).astype(float)
+    win = int(window_sec * fs_emg)
+    if win < 1:
+        win = 1
+    shape = sig.shape[0] // win
+    rms_vals = []
+    times = []
+    for i in range(shape):
+        seg = sig[i * win : (i + 1) * win]
+        rms = np.sqrt(np.nanmean(seg**2))
+        rms_vals.append(rms)
+        times.append((i * win + win / 2) / fs_emg)
+    rms_vals = np.array(rms_vals)
+    times = np.array(times)
+    med = np.nanmedian(rms_vals)
+    mad = np.nanmedian(np.abs(rms_vals - med)) + 1e-12
+    thr = med + rms_threshold * mad
+    bursts = rms_vals > thr
+    flag = np.any(bursts)
+    return bool(flag), times, rms_vals
+
+
+# ------------------ Plots y reportes ------------------
+def save_ecg_emg_plots(
+    ecg_sig: NDArray,
+    emg_sig: Optional[NDArray],
+    fs: float,
+    rpeaks_idx: np.ndarray,
+    out_dir: str,
+    record_id: str,
+) -> Tuple[Dict[str, str], np.ndarray, np.ndarray]:
+    os.makedirs(out_dir, exist_ok=True)
+    plots = {}
+    t = np.arange(len(ecg_sig)) / fs
+    fig, ax = plt.subplots(
+        3 if emg_sig is not None else 2, 1, figsize=(12, 8), sharex=True
+    )
+    if emg_sig is None:
+        ax = np.atleast_1d(ax)
+    ax[0].plot(t, ecg_sig, linewidth=0.8)
+    if rpeaks_idx is not None and len(rpeaks_idx) > 0:
+        ax[0].plot(
+            rpeaks_idx / fs, ecg_sig[rpeaks_idx], "ro", markersize=4, label="R-peaks"
+        )
+    ax[0].set_ylabel("ECG (a.u.)")
+    ax[0].legend()
+    ax[0].grid(True)
+    if rpeaks_idx is not None and len(rpeaks_idx) >= 2:
+        rr_sec = np.diff(rpeaks_idx) / fs
+        ax[1].plot(rpeaks_idx[1:] / fs, 60.0 / rr_sec, "-o", markersize=3)
+        ax[1].set_ylabel("HR (bpm)")
+        ax[1].grid(True)
+    else:
+        ax[1].text(
+            0.01, 0.5, "No hay suficientes peaks para HR", transform=ax[1].transAxes
+        )
+    if emg_sig is not None:
+        t_emg = np.arange(len(emg_sig)) / fs
+        ax[2].plot(t_emg, emg_sig, linewidth=0.6)
+        ax[2].set_ylabel("EMG (a.u.)")
+        ax[2].grid(True)
+    ax[-1].set_xlabel("Tiempo (s)")
+    plt.suptitle(f"Record {record_id} - ECG & EMG overview")
+    plot_path = os.path.join(out_dir, f"{record_id}_overview.png")
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.savefig(plot_path, dpi=150)
+    plt.close(fig)
+    plots["overview"] = plot_path
+    f, Pxx = compute_psd(ecg_sig, fs)
+    fig2, ax2 = plt.subplots(1, 1, figsize=(10, 3.5))
+    ax2.semilogy(f, Pxx)
+    ax2.set_xlim(0, 50)
+    ax2.set_xlabel("Hz")
+    ax2.set_ylabel("PSD")
+    ax2.grid(True)
+    psd_path = os.path.join(out_dir, f"{record_id}_psd.png")
+    fig2.tight_layout()
+    fig2.savefig(psd_path, dpi=150)
+    plt.close(fig2)
+    plots["psd"] = psd_path
+    return plots, f, Pxx
+
+
+# ------------------ Puntuación clínica y alertas ------------------
+def compute_clinical_score(report: ProcessingReport) -> Dict[str, Any]:
+    score = 0
+    breakdown = []
+    sdnn = report.hrv_sdnn
+    rmssd = report.hrv_rmssd
+    if sdnn is not None and sdnn < 100:
+        sdnn_ms = sdnn * 1000.0
+    else:
+        sdnn_ms = sdnn
+    if rmssd is not None and rmssd < 100:
+        rmssd_ms = rmssd * 1000.0
+    else:
+        rmssd_ms = rmssd
+    if not report.qc.ok:
+        score += 2
+        breakdown.append("QC warnings (data quality) +2")
+    if report.emg_artifact_flag:
+        score += 1
+        breakdown.append("EMG artifacts detected +1")
+    hr = report.hr_mean
+    if hr is None:
+        breakdown.append("HR not available (no score from HR)")
+    else:
+        if hr < 40:
+            score += 3
+            breakdown.append(f"Marked bradycardia (HR={hr:.1f}) +3")
+        elif hr < 50:
+            score += 2
+            breakdown.append(f"Moderate bradycardia (HR={hr:.1f}) +2")
+        elif hr < 60:
+            score += 1
+            breakdown.append(f"Mild bradycardia (HR={hr:.1f}) +1")
+        elif hr > 120:
+            score += 3
+            breakdown.append(f"Marked tachycardia (HR={hr:.1f}) +3")
+        elif hr > 100:
+            score += 2
+            breakdown.append(f"Moderate tachycardia (HR={hr:.1f}) +2")
+    if sdnn_ms is not None:
+        if sdnn_ms < 30:
+            score += 2
+            breakdown.append(f"Very low SDNN ({sdnn_ms:.1f} ms) +2")
+        elif sdnn_ms < 50:
+            score += 1
+            breakdown.append(f"Low SDNN ({sdnn_ms:.1f} ms) +1")
+    if rmssd_ms is not None:
+        if rmssd_ms < 15:
+            score += 1
+            breakdown.append(f"Low RMSSD ({rmssd_ms:.1f} ms) +1")
+    if score <= 2:
+        priority = "Low"
+    elif score <= 4:
+        priority = "Medium"
+    else:
+        priority = "High"
+    return {
+        "score": int(score),
+        "breakdown": breakdown,
+        "priority": priority,
+        "sdnn_ms": sdnn_ms,
+        "rmssd_ms": rmssd_ms,
+        "hr_mean": hr,
+    }
+
+
+def generate_alerts_explanations(
+    report: ProcessingReport, score_info: Dict[str, Any]
+) -> List[str]:
+    alerts = []
+    pr = score_info.get("priority", "Low")
+    if pr == "High":
+        alerts.append(
+            "ALERTA URGENTE: Prioridad ALTA — revisar inmediatamente (posible arritmia severa / bradicardia/taquicardia marcada)."
+        )
+    elif pr == "Medium":
+        alerts.append(
+            "ALERTA: Prioridad media — revisar pronto (anomalías moderadas detectadas)."
+        )
+    else:
+        alerts.append(
+            "Estado: Prioridad baja — sin hallazgos críticos detectados automáticamente."
+        )
+    for reason in score_info.get("breakdown", [])[:4]:
+        alerts.append("Causa: " + reason)
+    if not report.qc.ok:
+        alerts.append(
+            "Nota: Calidad de señal no óptima — interpretar resultados con precaución."
+        )
+    if report.emg_artifact_flag:
+        alerts.append(
+            "Nota: Artefactos EMG detectados — algunos latidos pueden ser falsos positivos."
+        )
+    return alerts
+
+
+# ------------------ Main orchestrator ------------------
+def process_record(
+    record_id: str,
+    channel_idx: int = 0,
+    emg_channel_idx: Optional[int] = None,
+    pn_dir: Optional[str] = "mitdb",
+    local_path: Optional[str] = None,
+    out_dir: str = "results",
+    segment_seconds: Optional[float] = None,
+) -> ProcessingReport:
+    notes = []
+    sigs, fs, meta = read_record(
+        record_id, pn_dir=pn_dir if local_path is None else None, local_path=local_path
+    )
+    if sigs.ndim == 2:
+        samples, nch = sigs.shape
+    else:
+        samples = sigs.shape[0]
+        nch = 1
+        sigs = sigs.reshape(-1, 1)
+    if channel_idx >= nch:
+        raise ValueError(
+            f"channel_idx {channel_idx} out of range (found {nch} channels)"
+        )
+    ecg_raw = sigs[:, channel_idx]
+    emg_raw = (
+        sigs[:, emg_channel_idx]
+        if (emg_channel_idx is not None and emg_channel_idx < nch)
+        else None
+    )
+    if segment_seconds is not None:
+        samp_to = int(min(len(ecg_raw), int(segment_seconds * fs)))
+        ecg_raw = ecg_raw[:samp_to]
+        if emg_raw is not None:
+            emg_raw = emg_raw[:samp_to]
+    qc = quality_check(ecg_raw, fs)
+    if not qc.ok:
+        notes.append("QC warning: " + "; ".join(qc.reasons))
+        logger.warning("QC not OK: %s", qc.reasons)
+    ecg_p = preprocess_ecg(ecg_raw, fs, apply_notch=True)
+    rpeaks = detect_qrs(ecg_p, fs)
+    hrv = compute_hrv(rpeaks, fs)
+    emg_flag = False
+    if emg_raw is not None:
+        try:
+            emg_hp = bandpass_filter(
+                emg_raw, fs, lowcut=20.0, highcut=min(400.0, fs / 2.0)
+            )
+        except Exception:
+            emg_hp = emg_raw
+        emg_med = np.nanmedian(emg_hp)
+        emg_mad = np.nanmedian(np.abs(emg_hp - emg_med)) + 1e-12
+        emg_norm = (emg_hp - emg_med) / emg_mad
+        emg_flag, emg_times, emg_rms = detect_emg_artifacts(
+            emg_norm, fs, window_sec=0.5, rms_threshold=3.0
+        )
+        if emg_flag:
+            notes.append("EMG artifact suspected (bursts detected)")
+    plots, freqs, psd_vals = save_ecg_emg_plots(
+        ecg_p, emg_raw if emg_raw is not None else None, fs, rpeaks, out_dir, record_id
+    )
+    report = ProcessingReport(
+        record_id=record_id,
+        fs=fs,
+        n_samples=len(ecg_p),
+        qc=qc,
+        hr_mean=hrv["hr_mean"],
+        hrv_sdnn=hrv["sdnn"],
+        hrv_rmssd=hrv["rmssd"],
+        rpeaks_sec=(rpeaks / fs).tolist() if rpeaks is not None else [],
+        psd_freqs=freqs,
+        psd_vals=psd_vals,
+        emg_artifact_flag=bool(emg_flag),
+        plots=plots,
+        notes=notes,
+    )
+    # puntuación clínica y alertas
+    try:
+        score_info = compute_clinical_score(report)
+        report.clinical_score = score_info
+        report.priority = score_info.get("priority")
+        report.alerts = generate_alerts_explanations(report, score_info)
+        report.notes.append(
+            f"Clinical score: {score_info.get('score')} priority:{report.priority}"
+        )
+    except Exception as e:
+        logger.warning("Clinical scoring failed: %s", e)
+        report.notes.append(f"Clinical scoring failed: {e}")
+    return report
+
+
+# ------------------ Trazado y exportación ------------------
+def enhanced_ecg_plot(report: ProcessingReport, show_state_box: bool = True, figsize=(14,6)) -> str:
+    """
+    Genera un plot combinado (ECG preprocesada + R-peaks + BPM instantáneo).
+    Usa report.clinical_score / report.priority como fuente de verdad para mostrar estado.
+    Devuelve la ruta del PNG guardado y actualiza report.plots['enhanced'].
+    """
+    out_dir = os.path.dirname(list(report.plots.values())[0]) if report.plots else "results"
+    os.makedirs(out_dir, exist_ok=True)
+
+    # Intentar reconstruir la señal preprocesada para plotear; fallback a zeros
+    try:
+        sigs, fs, meta = read_record(report.record_id, pn_dir='mitdb')
+        ecg_raw = sigs[:,0] if sigs.ndim == 2 else sigs[:,0]
+        ecg_p = preprocess_ecg(ecg_raw, fs, apply_notch=True)
+    except Exception:
+        # Si no podemos leer el registro, usamos ceros para mantener la interfaz
+        fs = getattr(report, "fs", 250.0)
+        ecg_p = np.zeros(getattr(report, "n_samples", int(10 * fs)))
+
+    # Eje temporal
+    t = np.arange(len(ecg_p)) / getattr(report, "fs", fs)
+
+    # R-peaks (report.rpeaks_sec debe ser lista de segundos)
+    rpeaks_sec = np.array(report.rpeaks_sec) if getattr(report, "rpeaks_sec", None) is not None else np.array([])
+    rpeaks_idx = (rpeaks_sec * getattr(report, "fs", fs)).astype(int) if rpeaks_sec.size > 0 else np.array([], dtype=int)
+
+    # BPM instantáneo
+    if len(rpeaks_idx) >= 2:
+        rr_sec = np.diff(rpeaks_idx) / getattr(report, "fs", fs)
+        bpm_inst = 60.0 / rr_sec
+        bpm_times = rpeaks_idx[1:] / getattr(report, "fs", fs)
+    else:
+        rr_sec = np.array([]); bpm_inst = np.array([]); bpm_times = np.array([])
+
+    # Convertir hrv a ms si parece estar en segundos
+    sdnn_ms = report.hrv_sdnn * 1000.0 if report.hrv_sdnn is not None and report.hrv_sdnn < 100 else report.hrv_sdnn
+    rmssd_ms = report.hrv_rmssd * 1000.0 if report.hrv_rmssd is not None and report.hrv_rmssd < 100 else report.hrv_rmssd
+
+    # Construir figura
+    fig, (ax1, ax2) = plt.subplots(2,1, figsize=figsize, sharex=True, gridspec_kw={'height_ratios':[2,1]})
+    ax1.plot(t, ecg_p, lw=0.9)
+    if rpeaks_idx.size > 0:
+        valid = rpeaks_idx < len(ecg_p)
+        if valid.any():
+            ax1.plot(rpeaks_idx[valid] / getattr(report, "fs", fs), ecg_p[rpeaks_idx[valid]], 'ro', markersize=4, label='R-peaks')
+    ax1.set_ylabel('ECG (a.u.)')
+    ax1.grid(True)
+    ax1.legend(loc='upper right')
+
+    # BPM subplot
+    if bpm_inst.size > 0:
+        ax2.plot(bpm_times, bpm_inst, '-o', markersize=4, label='BPM inst')
+        if report.hr_mean is not None and bpm_times.size > 0:
+            ax2.hlines(report.hr_mean, bpm_times[0], bpm_times[-1], linestyles='--', label=f'Mean BPM {report.hr_mean:.1f}')
+    else:
+        ax2.text(0.02, 0.5, 'No hay suficientes picos para BPM instantáneo', transform=ax2.transAxes)
+    ax2.set_xlabel('Time (s)')
+    ax2.set_ylabel('BPM')
+    try:
+        ymax = max(120, np.nanmax(bpm_inst) + 10) if bpm_inst.size > 0 else 120
+        ax2.set_ylim(0, ymax)
+    except Exception:
+        ax2.set_ylim(0, 120)
+    ax2.grid(True)
+    ax2.legend(loc='upper right')
+
+    # ===== Unificar fuente de la verdad para estado/prioridad (usar report.clinical_score si existe) =====
+    score_info = getattr(report, "clinical_score", None)
+    if score_info is not None:
+        display_priority = score_info.get("priority", None)
+        display_breakdown = score_info.get("breakdown", []) or []
+    else:
+        display_priority = None
+        display_breakdown = []
+
+    if display_priority is None and 'classify_patient_state' in globals():
+        fallback_state = classify_patient_state(report.hr_mean, sdnn_ms, rmssd_ms, None, report.emg_artifact_flag, report.qc)
+        display_priority = fallback_state.get("risk_level", "Unknown")
+        display_reasons = fallback_state.get("reasons", [])
+    else:
+        display_reasons = display_breakdown if display_breakdown else []
+
+
+    if show_state_box:
+        alert_texts = report.alerts if getattr(report, "alerts", None) else []
+        txt_lines = [
+            f"Priority: {display_priority if display_priority is not None else 'N/A'}",
+            f"HR mean: {report.hr_mean if report.hr_mean is not None else 'N/A'}",
+        ]
+        if display_reasons:
+            txt_lines.append("Reasons:")
+            for rr in display_reasons[:4]:
+                txt_lines.append(f" - {rr}")
+        if alert_texts:
+            txt_lines.append("")
+            txt_lines.append("Alerts:")
+            for a in alert_texts[:4]:
+                txt_lines.append(f" - {a}")
+        txt = "\n".join(txt_lines)
+        ax1.text(0.99, 0.02, txt, transform=ax1.transAxes, ha='right', va='bottom', fontsize=9, bbox=dict(facecolor='white', alpha=0.95))
+
+    plt.suptitle(f"Enhanced ECG & BPM - {report.record_id}")
+    outpath = os.path.join(out_dir, f"{report.record_id}_enhanced.png")
+    fig.tight_layout(rect=[0,0,1,0.96])
+    fig.savefig(outpath, dpi=150)
+    plt.close(fig)
+
+    # actualizar report y guardar JSON resumido
+    report.plots['enhanced'] = outpath
+    state_path = os.path.join(out_dir, f"{report.record_id}_state.json")
+    try:
+        with open(state_path, 'w') as fh:
+            json.dump({"clinical_score": report.clinical_score, "alerts": report.alerts}, fh, indent=2)
+        report.notes.append(f"State saved: {state_path}")
+    except Exception as e:
+        report.notes.append(f"State JSON save failed: {e}")
+
+    return outpath
+
+def classify_patient_state(
+    hr_mean: Optional[float],
+    sdnn_ms: Optional[float],
+    rmssd_ms: Optional[float],
+    pnn50: Optional[float],
+    emg_flag: bool,
+    qc: QCResult,
+) -> dict:
+    reasons = []
+    risk = 0
+    if not qc.ok:
+        reasons.append(
+            "QC warnings: " + "; ".join(qc.reasons) if qc.reasons else "QC not OK"
+        )
+        risk += 1
+    if emg_flag:
+        reasons.append("Artefactos EMG detectados — posibles falsos latidos")
+        risk += 1
+    if hr_mean is None:
+        reasons.append("Frecuencia cardiaca no disponible")
+        return {
+            "label": "Insuficiente datos",
+            "risk_level": "Unknown",
+            "reasons": reasons,
+        }
+    if hr_mean < 50:
+        reasons.append(f"Bradicardia marcada (HR={hr_mean:.1f} bpm)")
+        risk += 2
+    elif hr_mean < 60:
+        reasons.append(f"Bradicardia leve (HR={hr_mean:.1f} bpm)")
+        risk += 1
+    elif hr_mean <= 100:
+        reasons.append(f"Ritmo en rango normal (HR={hr_mean:.1f} bpm)")
+    else:
+        reasons.append(f"Taquicardia (HR={hr_mean:.1f} bpm)")
+        risk += 2
+    if sdnn_ms is not None:
+        if sdnn_ms < 50:
+            reasons.append(f"Baja variabilidad (SDNN={sdnn_ms:.1f} ms)")
+            risk += 1
+        elif sdnn_ms > 150:
+            reasons.append(f"Variabilidad muy alta (SDNN={sdnn_ms:.1f} ms) — revisar")
+            risk += 1
+    if rmssd_ms is not None:
+        if rmssd_ms < 20:
+            reasons.append(f"RMSSD bajo ({rmssd_ms:.1f} ms)")
+            risk += 1
+    if pnn50 is not None:
+        if pnn50 < 3:
+            reasons.append(f"pNN50 muy bajo ({pnn50:.1f}%) — baja variabilidad vagal")
+            risk += 1
+    if risk <= 1:
+        risk_level = "Low"
+    elif risk in (2, 3):
+        risk_level = "Medium"
+    else:
+        risk_level = "High"
+    label = (
+        " / ".join([r.split("(")[0].strip() for r in reasons]) if reasons else "Normal"
+    )
+    return {"label": label, "risk_level": risk_level, "reasons": reasons}
+
+
+def export_report_csv(report: ProcessingReport, out_dir: Optional[str] = None) -> str:
+    if out_dir is None:
+        out_dir = (
+            os.path.dirname(list(report.plots.values())[0])
+            if report.plots
+            else "results"
+        )
+    os.makedirs(out_dir, exist_ok=True)
+    clinical_score_json = (
+        json.dumps(report.clinical_score) if report.clinical_score is not None else ""
+    )
+    row = {
+        "record_id": report.record_id,
+        "fs": report.fs,
+        "n_samples": report.n_samples,
+        "qc_ok": report.qc.ok,
+        "qc_reasons": "|".join(report.qc.reasons) if report.qc.reasons else "",
+        "hr_mean": report.hr_mean,
+        "hrv_sdnn": report.hrv_sdnn,
+        "hrv_rmssd": report.hrv_rmssd,
+        "n_rpeaks": len(report.rpeaks_sec) if report.rpeaks_sec is not None else 0,
+        "emg_artifact_flag": report.emg_artifact_flag,
+        "clinical_score": clinical_score_json,
+        "priority": report.priority,
+        "alerts": "|".join(report.alerts) if report.alerts else "",
+        "notes": "|".join(report.notes) if report.notes else "",
+    }
+    csv_path = os.path.join(out_dir, f"{report.record_id}_summary.csv")
+    with open(csv_path, "w", newline="") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=list(row.keys()))
+        writer.writeheader()
+        writer.writerow(row)
+    return csv_path
+
+
+def run_full_analysis(
+    record_id: str,
+    channel_idx: int = 0,
+    emg_channel_idx: Optional[int] = None,
+    pn_dir: Optional[str] = "mitdb",
+    local_path: Optional[str] = None,
+    out_dir: str = "results",
+    segment_seconds: Optional[float] = None,
+    make_enhanced_plot: bool = True,
+) -> ProcessingReport:
+    rpt = process_record(
+        record_id,
+        channel_idx=channel_idx,
+        emg_channel_idx=emg_channel_idx,
+        pn_dir=pn_dir,
+        local_path=local_path,
+        out_dir=out_dir,
+        segment_seconds=segment_seconds,
+    )
+    if make_enhanced_plot:
+        try:
+            enhanced_ecg_plot(rpt)
+        except Exception as e:
+            rpt.notes.append(f"Enhanced plot failed: {e}")
+    try:
+        csvp = export_report_csv(rpt, out_dir=out_dir)
+        rpt.notes.append(f"CSV saved: {csvp}")
+    except Exception as e:
+        rpt.notes.append(f"CSV export failed: {e}")
+    return rpt
+
+
+# ------------------ Convenience runner y comparador de anotaciones ------------------
+def quick_run_and_show(
+    record_id="100",
+    channel_idx=0,
+    pn_dir="mitdb",
+    segment_seconds=10,
+    out_dir="results_quick",
+):
+    rep = run_full_analysis(
+        record_id=record_id,
+        channel_idx=channel_idx,
+        emg_channel_idx=None,
+        pn_dir=pn_dir,
+        local_path=None,
+        out_dir=out_dir,
+        segment_seconds=segment_seconds,
+        make_enhanced_plot=True,
+    )
+    print("=== Quick run summary ===")
+    print(f"Record: {rep.record_id}")
+    print(f"FS: {rep.fs} Hz, samples procesadas: {rep.n_samples}")
+    print(f"QC ok: {rep.qc.ok}")
+    print(f"HR mean: {rep.hr_mean}, SDNN: {rep.hrv_sdnn}, RMSSD: {rep.hrv_rmssd}")
+    print(f"Nº R-peaks detectados: {len(rep.rpeaks_sec)}")
+    print("Clinical score:", rep.clinical_score)
+    print("Priority:", rep.priority)
+    print("Alerts:", rep.alerts)
+    print("Notes:", rep.notes)
+    # show plots
+    from pathlib import Path
+    import matplotlib.image as mpimg
+
+    for name, path in rep.plots.items():
+        if Path(path).exists():
+            img = mpimg.imread(path)
+            plt.figure(figsize=(10, 3))
+            plt.imshow(img)
+            plt.axis("off")
+            plt.title(f"{record_id} - {name}")
+            plt.show()
+    return rep
+
+
+def compare_with_annotations(
+    record_id: str,
+    rpeaks_idx: np.ndarray,
+    fs: float,
+    ann_symbol: Optional[str] = None,
+    ann_record_dir: str = "mitdb",
+    tol_ms: int = 150,
+) -> Dict[str, Any]:
+    try:
+        ann = wfdb.rdann(record_id, "atr", pn_dir=ann_record_dir)
+    except Exception:
+        ann = wfdb.rdann(record_id, "atr")
+    ann_idx = np.array(ann.sample, dtype=int)
+    if ann_symbol is not None and hasattr(ann, "symbol"):
+        symbols = np.array(ann.symbol)
+        ann_idx = ann_idx[symbols == ann_symbol]
+    tol_samples = int((tol_ms / 1000.0) * fs)
+    r = np.array(rpeaks_idx, dtype=int)
+    matched_ann = np.zeros(len(ann_idx), dtype=bool)
+    matched_r = np.zeros(len(r), dtype=bool)
+    for i, a in enumerate(ann_idx):
+        if r.size == 0:
+            break
+        diffs = np.abs(r - a)
+        j = np.argmin(diffs)
+        if diffs[j] <= tol_samples:
+            matched_ann[i] = True
+            matched_r[j] = True
+    TP = int(matched_ann.sum())
+    FN = int((~matched_ann).sum())
+    FP = int((~matched_r).sum())
+    sensitivity = TP / (TP + FN) if (TP + FN) > 0 else None
+    ppv = TP / (TP + FP) if (TP + FP) > 0 else None
+    return {
+        "TP": TP,
+        "FP": FP,
+        "FN": FN,
+        "sensitivity": sensitivity,
+        "ppv": ppv,
+        "tol_ms": tol_ms,
+    }
+
+
+# ------------------ Batch runner para demo  ------------------
+import base64
+import pandas as pd
+from io import BytesIO
+from typing import List
+
+
+def process_batch(
+    metadata_list: List[dict], out_dir: str = "batch_results", show_html: bool = True
+):
+    """
+    metadata_list: lista de dicts con keys:
+      - record_id (str) : id WFDB o local
+      - first_name (str)
+      - last_name (str)
+      - segment_seconds (optional int)
+      - pn_dir (optional str) default 'mitdb'
+      - force_priority (optional str) one of 'Low','Medium','High' (solo para demo)
+    Output:
+      - carpeta out_dir con subcarpetas por paciente (imagenes, json, csv)
+      - archivo out_dir/summary.csv con resumen (name, record_id, score, priority, enhanced_path)
+      - archivo out_dir/summary.html con reporte visual (autocontenido)
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    rows = []
+    reports = []
+
+    for meta in metadata_list:
+        rid = meta.get("record_id")
+        fname = meta.get("first_name", "")
+        lname = meta.get("last_name", "")
+        seg = meta.get("segment_seconds", 10)
+        pn = meta.get("pn_dir", "mitdb")
+        force_pr = meta.get("force_priority", None)
+
+        patient_dir = os.path.join(out_dir, f"{rid}_{fname}_{lname}".replace(" ", "_"))
+        os.makedirs(patient_dir, exist_ok=True)
+
+        print(f"[BATCH] Procesando {rid} — {fname} {lname} (seg={seg})")
+        try:
+            rep = run_full_analysis(
+                record_id=rid,
+                channel_idx=0,
+                pn_dir=pn,
+                out_dir=patient_dir,
+                segment_seconds=seg,
+                make_enhanced_plot=True,
+            )
+        except Exception as e:
+            print(f"[BATCH] ERROR al procesar {rid}: {e}")
+            # registrar fila de error
+            rows.append(
+                {
+                    "first_name": fname,
+                    "last_name": lname,
+                    "record_id": rid,
+                    "score": None,
+                    "priority": "Error",
+                    "alerts": "Processing failed",
+                    "enhanced_path": None,
+                }
+            )
+            continue
+
+        # guardar copia del JSON de estado/score en la carpeta paciente
+        state_json_path = os.path.join(patient_dir, f"{rid}_state.json")
+        try:
+            with open(state_json_path, "w") as fh:
+                json.dump(
+                    {
+                        "record_id": rep.record_id,
+                        "clinical_score": rep.clinical_score,
+                        "priority": rep.priority,
+                        "alerts": rep.alerts,
+                    },
+                    fh,
+                    indent=2,
+                )
+        except Exception as e:
+            print(f"[BATCH] No pude guardar JSON en {state_json_path}: {e}")
+
+        enhanced_img = rep.plots.get("enhanced") if rep.plots else None
+        # copiar imagen enhanced a carpeta paciente si está en otro lado (ya está guardada en out_dir pasado a run_full_analysis)
+        # añadir fila resumen
+        rows.append(
+            {
+                "first_name": fname,
+                "last_name": lname,
+                "record_id": rid,
+                "score": (
+                    rep.clinical_score.get("score") if rep.clinical_score else None
+                ),
+                "priority": rep.priority,
+                "alerts": " | ".join(rep.alerts) if rep.alerts else "",
+                "enhanced_path": enhanced_img,
+            }
+        )
+        reports.append((rep, patient_dir))
+
+    # dataframe resumen
+    df = pd.DataFrame(rows)
+    summary_csv = os.path.join(out_dir, "summary.csv")
+    df.to_csv(summary_csv, index=False)
+    print(f"[BATCH] Summary CSV guardado en: {summary_csv}")
+
+    # grafico de barras de prioridades (para presentar)
+    try:
+        counts = df["priority"].fillna("Unknown").value_counts()
+        fig, ax = plt.subplots(figsize=(6, 4))
+        counts.plot.bar(ax=ax)
+        ax.set_title("Distribución de prioridades")
+        ax.set_ylabel("Número de pacientes")
+        ax.grid(axis="y")
+        chart_path = os.path.join(out_dir, "priority_counts.png")
+        fig.tight_layout()
+        fig.savefig(chart_path, dpi=150)
+        plt.close(fig)
+        print(f"[BATCH] Chart guardado en: {chart_path}")
+    except Exception as e:
+        print("[BATCH] No pude hacer el chart:", e)
+        chart_path = None
+
+    # crear HTML autocontenido para el jurado
+    html_path = os.path.join(out_dir, "summary.html")
+    with open(html_path, "w", encoding="utf-8") as fh:
+        fh.write(
+            "<html><head><meta charset='utf-8'><title>Reporte Batch - CardioNeuro</title></head><body>\n"
+        )
+        fh.write(f"<h1>Reporte batch — {len(rows)} pacientes</h1>\n")
+        if chart_path and os.path.exists(chart_path):
+            # incrustar chart como base64
+            with open(chart_path, "rb") as cf:
+                b = base64.b64encode(cf.read()).decode("ascii")
+            fh.write(
+                f"<h2>Distribución de prioridades</h2><img src='data:image/png;base64,{b}' style='max-width:600px;'><hr>\n"
+            )
+
+        fh.write("<table border='1' cellpadding='6' style='border-collapse:collapse'>")
+        fh.write(
+            "<tr><th>Nombre</th><th>Apellido</th><th>Record ID</th><th>Score</th><th>Priority</th><th>Alerts</th><th>Enhanced</th></tr>\n"
+        )
+        for r in rows:
+            # embed enhanced image if exists
+            img_tag = ""
+            if r.get("enhanced_path") and os.path.exists(r["enhanced_path"]):
+                with open(r["enhanced_path"], "rb") as ef:
+                    eb = base64.b64encode(ef.read()).decode("ascii")
+                img_tag = (
+                    f"<img src='data:image/png;base64,{eb}' style='max-width:300px'>"
+                )
+            fh.write("<tr>")
+            fh.write(f"<td>{r.get('first_name','')}</td>")
+            fh.write(f"<td>{r.get('last_name','')}</td>")
+            fh.write(f"<td>{r.get('record_id','')}</td>")
+            fh.write(f"<td>{r.get('score','')}</td>")
+            fh.write(f"<td>{r.get('priority','')}</td>")
+            fh.write(f"<td>{r.get('alerts','')}</td>")
+            fh.write(f"<td>{img_tag}</td>")
+            fh.write("</tr>\n")
+        fh.write("</table>\n")
+        fh.write("</body></html>\n")
+    print(f"[BATCH] HTML de reporte guardado en: {html_path}")
+
+    if show_html:
+        try:
+            # abrir con el navegador por defecto
+            import webbrowser
+
+            webbrowser.open("file://" + os.path.abspath(html_path))
+        except Exception:
+            pass
+
+    return df, reports, html_path
+
+
+# ------------------ Demo runner final ------------------
+
+if __name__ == "__main__":
+    # Asegurarnos de ver logs informativos
+    logging.getLogger().setLevel(logging.INFO)
+
+    # Lista de ejemplo para la demo —
+    demo_metadata = [
+        {"record_id":"100", "first_name":"Juan", "last_name":"Pérez", "segment_seconds":10, "pn_dir":"mitdb", "force_priority":"Low"},
+        {"record_id":"101", "first_name":"María", "last_name":"González", "segment_seconds":10, "pn_dir":"mitdb", "force_priority":"Medium"},
+        {"record_id":"102", "first_name":"Carlos", "last_name":"Santos", "segment_seconds":10, "pn_dir":"mitdb", "force_priority":"High"},
+    ]
+
+    print("Iniciando demo batch (esto puede tardar varios segundos por registro si descarga desde PhysioNet)...")
+    try:
+        df, reports, html_path = process_batch(demo_metadata, out_dir="demo_jurado", show_html=True)
+        print("\nBatch finalizado. Resumen:")
+        print(df[["first_name","last_name","record_id","score","priority"]].to_string(index=False))
+        print(f"\nArchivo HTML generado: {html_path}")
+        print(f"CSV resumen: {os.path.abspath(os.path.join('demo_jurado','summary.csv'))}")
+    except Exception as e:
+        print("Error ejecutando process_batch:", e)
+
+    # Mantener la terminal abierta hasta que presiones Enter
+    try:
+        input("\nPresiona Enter para terminar (esto evita que la ventana se cierre automáticamente)...")
+    except Exception:
+        pass
